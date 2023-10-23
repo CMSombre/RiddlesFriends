@@ -1,0 +1,12 @@
+name: RiddlesFriends
+version: '${project.version}'
+main: me.cmriddles.riddlesfriends.RiddlesFriendMain
+api-version: '1.19'
+authors: [CMRiddles]
+description: A friend system that allows users to befriend players and see when they are online.
+commands:
+  friend:
+    description: Manage your friends list and friend requests.
+    usage: /friend <command>
+    aliases: [friends]
+
