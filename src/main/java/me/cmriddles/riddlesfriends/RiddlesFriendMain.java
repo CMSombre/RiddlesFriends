@@ -1,54 +1,54 @@
 package me.cmriddles.riddlesfriends;
 
-import org.bukkit.Sound;
+import org.bukkit.Bukkit;
 import org.bukkit.Particle;
+import org.bukkit.Sound;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
-import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
-import java.lang.reflect.Type;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 public class RiddlesFriendMain extends JavaPlugin {
 
-    private Map<String, List<String>> friendData;
-    private Map<String, List<String>> friendRequests;
-    private Gson gson;
+    private FriendDataCache friendDataCache;
 
     @Override
     public void onEnable() {
         getLogger().info("RiddlesFriend plugin has been enabled.");
-        gson = new Gson();
-        friendData = new HashMap<>();
-        friendRequests = new HashMap<>();
-        ensureDataFolderExists();
-        loadFriendData();
+
+        // Initialize database connection parameters
+        String jdbcUrl = "jdbc:mysql://localhost:3306/riddlesfriend?useSSL=false"; // Replace with your database URL
+        String username = "CMRiddles"; // Replace with your database username
+        String password = "GodSpeed742"; // Replace with your database password
+
+        // Initialize FriendDataCache with DatabaseHandler
+        DatabaseHandler databaseHandler = new DatabaseHandler(jdbcUrl, username, password);
+        friendDataCache = new FriendDataCache(databaseHandler);
+
+        // Other setup code can go here if needed
     }
 
     @Override
     public void onDisable() {
         getLogger().info("RiddlesFriend plugin has been disabled.");
-        saveFriendData();
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (command.getName().equalsIgnoreCase("friend")) {
-            if (args.length == 0) {
-                sender.sendMessage("Usage: /friend help");
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("Only players can use this command!");
                 return true;
             }
-            Player player = (sender instanceof Player) ? (Player) sender : null;
-            String playerName = player != null ? player.getName() : "CONSOLE";
+
+            Player player = (Player) sender;
+            String playerName = player.getName();
+
+            if (args.length == 0) {
+                sendHelpMessage(sender);
+                return true;
+            }
+
             String subCommand = args[0].toLowerCase();
 
             switch (subCommand) {
@@ -65,54 +65,19 @@ public class RiddlesFriendMain extends JavaPlugin {
                     handleFriendRemove(sender, playerName, args);
                     break;
                 case "accept":
-                    handleFriendAccept(sender, playerName, args);
+                    String friendToAccept = (args.length >= 2) ? args[1] : null;
+                    handleFriendAccept(sender, playerName, friendToAccept);
                     break;
                 case "deny":
-                    handleFriendDeny(sender, playerName, args);
+                    String friendToDeny = (args.length >= 2) ? args[1] : null;
+                    handleFriendDeny(sender, playerName, friendToDeny);
                     break;
                 default:
-                    sender.sendMessage("Unknown command. Type /friend help for a list of commands.");
+                    sender.sendMessage("Unknown command. Type /" + label + " help for a list of commands.");
             }
             return true;
         }
         return false;
-    }
-
-    private void ensureDataFolderExists() {
-        if (!getDataFolder().exists()) {
-            getDataFolder().mkdir();
-        }
-    }
-
-    private void loadFriendData() {
-        loadMapFromJson("frienddata.json", friendData);
-        loadMapFromJson("friendrequests.json", friendRequests);
-    }
-
-    private void saveFriendData() {
-        saveMapToJson("frienddata.json", friendData);
-        saveMapToJson("friendrequests.json", friendRequests);
-    }
-
-    private void loadMapFromJson(String fileName, Map<String, List<String>> map) {
-        File dataFile = new File(getDataFolder(), fileName);
-        if (dataFile.exists()) {
-            try (FileReader reader = new FileReader(dataFile)) {
-                Type type = new TypeToken<Map<String, List<String>>>() {}.getType();
-                map.putAll(gson.fromJson(reader, type));
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
-    private void saveMapToJson(String fileName, Map<String, List<String>> map) {
-        File dataFile = new File(getDataFolder(), fileName);
-        try (FileWriter writer = new FileWriter(dataFile)) {
-            gson.toJson(map, writer);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
     }
 
     private void sendHelpMessage(CommandSender sender) {
@@ -120,14 +85,16 @@ public class RiddlesFriendMain extends JavaPlugin {
         sender.sendMessage("/friend list - Show who is currently on your friend list");
         sender.sendMessage("/friend add <player> - Add a player to your friend list");
         sender.sendMessage("/friend remove <player> - Remove a player from your friend list");
-        sender.sendMessage("/friend accept [optional: <player>] - Accept a friend request");
-        sender.sendMessage("/friend deny [optional: <player>] - Deny a friend request");
+        sender.sendMessage("/friend accept [player] - Accept a friend request");
+        sender.sendMessage("/friend deny [player] - Deny a friend request");
     }
 
     private void sendFriendList(CommandSender sender, String playerName) {
-        List<String> friendList = friendData.getOrDefault(playerName, new ArrayList<>());
-        if (!friendList.isEmpty()) {
-            sender.sendMessage("Your friend list: " + friendList.toString());
+        if (friendDataCache.hasFriendList(playerName)) {
+            sender.sendMessage("Your friend list:");
+            for (String friend : friendDataCache.getFriendList(playerName)) {
+                sender.sendMessage("- " + friend);
+            }
         } else {
             sender.sendMessage("Your friend list is empty.");
         }
@@ -136,16 +103,24 @@ public class RiddlesFriendMain extends JavaPlugin {
     private void handleFriendAdd(CommandSender sender, String playerName, String[] args) {
         if (args.length >= 2) {
             String friendToAdd = args[1];
-            if (!isFriend(playerName, friendToAdd) && !isFriendRequestPending(friendToAdd, playerName)) {
-                friendRequests.computeIfAbsent(friendToAdd, k -> new ArrayList<>()).add(playerName);
-                Player targetPlayer = getServer().getPlayer(friendToAdd);
+            if (!friendDataCache.isFriend(playerName, friendToAdd) && !friendDataCache.isFriendRequestPending(playerName, friendToAdd)) {
+                friendDataCache.addFriendRequest(playerName, friendToAdd);
+                Player targetPlayer = Bukkit.getPlayer(friendToAdd);
                 if (targetPlayer != null) {
-                    notifyPlayer(targetPlayer);
-                    targetPlayer.sendMessage("You have an incoming friend request from " + playerName +
-                            ", to accept type /friend accept or /friend deny.");
+                    targetPlayer.sendMessage("You have received a friend request from " + playerName +
+                            ". Type /friend accept " + playerName + " to accept.");
+
+                    // Play sound to the target player
+                    targetPlayer.playSound(targetPlayer.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+
+                    // Display particle effects to the target player
+                    targetPlayer.spawnParticle(Particle.VILLAGER_HAPPY, targetPlayer.getLocation(), 50);
+
+                    sender.sendMessage("Friend request sent to " + friendToAdd);
+                } else {
+                    sender.sendMessage("Could not find player: " + friendToAdd);
                 }
-                sender.sendMessage("Friend request sent to " + friendToAdd);
-            } else if (isFriend(playerName, friendToAdd)) {
+            } else if (friendDataCache.isFriend(playerName, friendToAdd)) {
                 sender.sendMessage(friendToAdd + " is already in your friend list.");
             } else {
                 sender.sendMessage("A friend request to " + friendToAdd + " is already pending or exists.");
@@ -158,8 +133,8 @@ public class RiddlesFriendMain extends JavaPlugin {
     private void handleFriendRemove(CommandSender sender, String playerName, String[] args) {
         if (args.length >= 2) {
             String friendToRemove = args[1];
-            if (isFriend(playerName, friendToRemove)) {
-                friendData.get(playerName).remove(friendToRemove);
+            if (friendDataCache.isFriend(playerName, friendToRemove)) {
+                friendDataCache.removeFriend(playerName, friendToRemove);
                 sender.sendMessage("Removed " + friendToRemove + " from your friend list.");
             } else {
                 sender.sendMessage(friendToRemove + " is not in your friend list.");
@@ -169,90 +144,52 @@ public class RiddlesFriendMain extends JavaPlugin {
         }
     }
 
-    private void handleFriendAccept(CommandSender sender, String playerName, String[] args) {
-        String requester;
-        if (args.length >= 2) {
-            requester = args[1];
-        } else {
-            List<String> requests = friendRequests.getOrDefault(playerName, new ArrayList<>());
-            if (requests.isEmpty()) {
-                sender.sendMessage("No pending friend requests.");
-                return;
-            }
-            requester = requests.get(0);
-        }
-
-        if (isFriendRequestPending(playerName, requester)) {
-            boolean accepted = acceptFriendRequest(playerName, requester);
-            if (accepted) {
-                sender.sendMessage("Accepted friend request from " + requester);
-                Player requesterPlayer = getServer().getPlayer(requester);
-                if (requesterPlayer != null) {
-                    requesterPlayer.sendMessage(playerName + " has accepted your friend request.");
-                }
-                sender.sendMessage("You have added " + requester + " to your friend list.");
-            } else {
-                sender.sendMessage("Failed to accept friend request from " + requester);
-            }
-        } else {
-            sender.sendMessage("No pending friend request from " + requester);
-        }
-    }
-
-    private void handleFriendDeny(CommandSender sender, String playerName, String[] args) {
-        String requester;
-        if (args.length >= 2) {
-            requester = args[1];
-        } else {
-            List<String> requests = friendRequests.getOrDefault(playerName, new ArrayList<>());
-            if (requests.isEmpty()) {
-                sender.sendMessage("No pending friend requests.");
-                return;
-            }
-            requester = requests.get(0);
-        }
-
-        if (isFriendRequestPending(playerName, requester)) {
-            boolean removed = removeFriendRequest(requester, playerName);
-            if (removed) {
-                sender.sendMessage("Denied friend request from " + requester);
-                Player requesterPlayer = getServer().getPlayer(requester);
-                if (requesterPlayer != null) {
-                    requesterPlayer.sendMessage(playerName + " has denied your friend request.");
+    private void handleFriendAccept(CommandSender sender, String playerName, String friendToAccept) {
+        if (friendToAccept == null) {
+            // Handle accepting friend requests without specifying a player
+            if (friendDataCache.hasFriendRequests(playerName)) {
+                for (String pendingRequest : friendDataCache.getFriendRequests(playerName)) {
+                    // Accept all pending friend requests
+                    friendDataCache.acceptFriendRequest(playerName, pendingRequest);
+                    sender.sendMessage("You are now friends with " + pendingRequest + "!");
                 }
             } else {
-                sender.sendMessage("Failed to deny friend request from " + requester);
+                sender.sendMessage("No pending friend requests to accept.");
             }
         } else {
-            sender.sendMessage("No pending friend request from " + requester);
+            // Handle accepting friend requests with specifying a player (friendToAccept)
+            if (friendDataCache.isFriendRequestPending(friendToAccept, playerName)) {
+                if (friendDataCache.acceptFriendRequest(playerName, friendToAccept)) {
+                    sender.sendMessage("You are now friends with " + friendToAccept + "!");
+                } else {
+                    sender.sendMessage("Failed to accept friend request from " + friendToAccept + ".");
+                }
+            } else {
+                sender.sendMessage("No pending friend request from " + friendToAccept + ".");
+            }
         }
     }
 
-    private boolean isFriend(String player, String friend) {
-        return friendData.containsKey(player) && friendData.get(player).contains(friend);
-    }
-
-    private boolean isFriendRequestPending(String requester, String target) {
-        return friendRequests.containsKey(target) && friendRequests.get(target).contains(requester);
-    }
-
-    private boolean acceptFriendRequest(String player, String requester) {
-        if (isFriendRequestPending(player, requester)) {
-            friendData.computeIfAbsent(player, k -> new ArrayList<>()).add(requester);
-            return removeFriendRequest(requester, player);
+    private void handleFriendDeny(CommandSender sender, String playerName, String friendToDeny) {
+        if (friendToDeny == null) {
+            // Handle denying friend requests without specifying a player
+            if (friendDataCache.hasFriendRequests(playerName)) {
+                for (String pendingRequest : friendDataCache.getFriendRequests(playerName)) {
+                    // Deny all pending friend requests
+                    friendDataCache.removeFriendRequest(pendingRequest, playerName);
+                    sender.sendMessage("Denied friend request from " + pendingRequest + ".");
+                }
+            } else {
+                sender.sendMessage("No pending friend requests to deny.");
+            }
+        } else {
+            // Handle denying friend requests with specifying a player (friendToDeny)
+            if (friendDataCache.isFriendRequestPending(friendToDeny, playerName)) {
+                friendDataCache.removeFriendRequest(friendToDeny, playerName);
+                sender.sendMessage("Denied friend request from " + friendToDeny + ".");
+            } else {
+                sender.sendMessage("No pending friend request from " + friendToDeny + ".");
+            }
         }
-        return false;
-    }
-
-    private boolean removeFriendRequest(String requester, String target) {
-        List<String> requests = friendRequests.getOrDefault(target, new ArrayList<>());
-        boolean removed = requests.remove(requester);
-        friendRequests.put(target, requests);
-        return removed;
-    }
-
-    private void notifyPlayer(Player player) {
-        player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0F, 1.0F);
-        player.spawnParticle(Particle.END_ROD, player.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.1);
     }
 }
